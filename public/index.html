@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Teach Me</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,400;7..72,600&display=swap" rel="stylesheet" />
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: #f8f4ec; color: #171717; font-family: 'Literata', serif; }
+      #app { min-height: 100vh; display: grid; place-items: start center; }
+      .container { width: min(840px, 92vw); padding: 56px 0 96px; }
+      .bar { display: flex; gap: 10px; }
+      .input, .button { font: inherit; font-size: 1rem; padding: 12px 14px; border: 1px solid #c8c0b2; background: transparent; }
+      .input { width: 100%; }
+      .button { cursor: pointer; white-space: nowrap; }
+      .button:disabled { opacity: 0.6; cursor: wait; }
+      .meta { margin-top: 20px; font-size: 0.92rem; opacity: 0.72; }
+      .error { margin-top: 12px; color: #8d2b2b; }
+      .thread { margin-top: 20px; }
+      .turn { margin-top: 18px; }
+      .who { font-size: 0.86rem; opacity: 0.62; margin-bottom: 6px; }
+      .text { white-space: pre-wrap; line-height: 1.75; font-size: 1.06rem; }
+      .follow { margin-top: 26px; }
+      @media (max-width: 640px) { .bar { flex-direction: column; } .button { width: 100%; } }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="text/babel">
+      const { useState } = React;
+
+      function App() {
+        const [url, setUrl] = useState('');
+        const [pageText, setPageText] = useState('');
+        const [domain, setDomain] = useState('');
+        const [history, setHistory] = useState([]);
+        const [followUp, setFollowUp] = useState('');
+        const [loading, setLoading] = useState(false);
+        const [thinking, setThinking] = useState(false);
+        const [error, setError] = useState('');
+
+        async function streamAssistant(messages) {
+          setThinking(true);
+          setHistory((h) => [...h, { role: 'assistant', content: '' }]);
+
+          const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pageText, messages })
+          });
+
+          if (!response.ok || !response.body) {
+            const payload = await response.json().catch(() => ({ error: 'Chat failed.' }));
+            throw new Error(payload.error || 'Chat failed.');
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let text = '';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            text += decoder.decode(value, { stream: true });
+            setHistory((h) => {
+              const next = [...h];
+              next[next.length - 1] = { role: 'assistant', content: text };
+              return next;
+            });
+          }
+
+          setThinking(false);
+        }
+
+        async function onTeach() {
+          setLoading(true);
+          setThinking(false);
+          setError('');
+          setHistory([]);
+          setPageText('');
+          setDomain('');
+
+          try {
+            const response = await fetch('/api/fetch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Unable to fetch page.');
+
+            setPageText(data.pageText);
+            setDomain(data.domain);
+
+            const initialMessages = [{ role: 'user', content: 'Teach me this page.' }];
+            await streamAssistant(initialMessages);
+          } catch (e) {
+            setError(e.message || 'Something went wrong.');
+          } finally {
+            setLoading(false);
+            setThinking(false);
+          }
+        }
+
+        async function onFollowUp(e) {
+          e.preventDefault();
+          const question = followUp.trim();
+          if (!question || thinking) return;
+
+          setError('');
+          setFollowUp('');
+
+          const nextHistory = [...history, { role: 'user', content: question }];
+          setHistory(nextHistory);
+
+          try {
+            await streamAssistant(nextHistory);
+          } catch (e) {
+            setError(e.message || 'Follow-up failed.');
+            setThinking(false);
+          }
+        }
+
+        return (
+          <section className="container">
+            <div className="bar">
+              <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Paste any URL..." />
+              <button className="button" onClick={onTeach} disabled={loading || thinking || !url.trim()}>{loading ? 'Reading...' : 'Teach Me'}</button>
+            </div>
+
+            {error && <div className="error">{error}</div>}
+            {domain && <div className="meta">Source: {domain}</div>}
+
+            <div className="thread">
+              {history.map((m, idx) => (
+                <article key={idx} className="turn">
+                  <div className="who">{m.role === 'assistant' ? 'Teacher' : 'You'}</div>
+                  <div className="text">{m.content}</div>
+                </article>
+              ))}
+            </div>
+
+            {history.some((m) => m.role === 'assistant' && m.content) && (
+              <form className="follow" onSubmit={onFollowUp}>
+                <input className="input" value={followUp} onChange={(e) => setFollowUp(e.target.value)} placeholder={thinking ? 'Thinking…' : 'Ask a follow-up...'} disabled={thinking} />
+              </form>
+            )}
+          </section>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+    </script>
+  </body>
+</html>
